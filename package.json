@@ -1,0 +1,67 @@
+{
+  "name": "deepseek-harness-desktop",
+  "version": "0.1.0",
+  "description": "Electron desktop launcher for DeepSeek Harness with managed Node.js fallback",
+  "author": "atlantis-mk and DeepSeek Harness Desktop contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/atlantis-mk/deepseek-harness-desktop#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atlantis-mk/deepseek-harness-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/atlantis-mk/deepseek-harness-desktop/issues"
+  },
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "check:environment": "node scripts/check-environment.mjs",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "release": "node scripts/release.mjs"
+  },
+  "dependencies": {
+    "semver": "7.8.5",
+    "tar": "7.5.22",
+    "three": "^0.169.0",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.atlankj.deepseekharnessdesktop",
+    "productName": "DeepSeek Harness Desktop",
+    "artifactName": "DeepSeek-Harness-Desktop-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  }
+}

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>正在启动 DeepSeek Harness</title>
+    <link rel="stylesheet" href="./loading.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true">
+      <div class="canvas-layer canvas-fluid-layer">
+        <canvas id="fluid-canvas"></canvas>
+      </div>
+      <div class="canvas-layer canvas-grid-layer">
+        <canvas id="grid-canvas"></canvas>
+      </div>
+      <div class="hero-particle-layer">
+        <div class="hero-particle-stage" id="hero-whale-stage"></div>
+      </div>
+    </div>
+
+    <header class="app-header">
+      <div class="brand-lockup" aria-label="DeepSeek Harness">
+        <img
+          class="brand-wordmark"
+          src="./assets/brand/deepseek-wordmark.svg"
+          alt="DeepSeek"
+          width="143"
+          height="23"
+        />
+        <span class="brand-pill">Harness</span>
+      </div>
+      <div class="header-meta" aria-label="应用信息">
+        <span class="status-led" aria-hidden="true"></span>
+        <span>DESKTOP PREVIEW</span>
+      </div>
+    </header>
+
+    <main class="startup-layout" aria-live="polite">
+      <section class="startup-copy">
+        <p class="kicker"><span aria-hidden="true">LOCAL RUNTIME</span> 本地启动环境</p>
+        <h1 id="message">正在启动<br />DeepSeek Harness</h1>
+        <p id="detail">正在初始化桌面运行环境…</p>
+
+        <div class="progress-region">
+          <div class="progress-labels">
+            <span id="progress-label">初始化中</span>
+            <span id="progress-value">···</span>
+          </div>
+          <div
+            class="progress-track"
+            id="progress-track"
+            role="progressbar"
+            aria-label="启动进度"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div class="progress-bar" id="progress-bar"></div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="retry" type="button" hidden>重新启动</button>
+          <p class="privacy-note">运行在本机，工作空间数据保留在你的设备中</p>
+        </div>
+      </section>
+
+      <aside class="startup-trace" aria-label="启动轨迹">
+        <div class="trace-heading">
+          <div>
+            <p>BOOT TRAJECTORY</p>
+            <h2>启动轨迹</h2>
+          </div>
+          <span>04 STAGES</span>
+        </div>
+
+        <ol class="stage-list">
+          <li class="stage is-current" data-stage="0">
+            <span class="stage-index">01</span>
+            <div class="stage-copy">
+              <strong>运行环境</strong>
+              <span class="stage-detail">检查系统 Node.js 与平台架构</span>
+            </div>
+            <span class="stage-state">进行中</span>
+          </li>
+          <li class="stage" data-stage="1">
+            <span class="stage-index">02</span>
+            <div class="stage-copy">
+              <strong>版本同步</strong>
+              <span class="stage-detail">获取 Harness 最新可用版本</span>
+            </div>
+            <span class="stage-state">等待</span>
+          </li>
+          <li class="stage" data-stage="2">
+            <span class="stage-index">03</span>
+            <div class="stage-copy">
+              <strong>插件装载</strong>
+              <span class="stage-detail">安装或读取本地依赖缓存</span>
+            </div>
+            <span class="stage-state">等待</span>
+          </li>
+          <li class="stage" data-stage="3">
+            <span class="stage-index">04</span>
+            <div class="stage-copy">
+              <strong>界面就绪</strong>
+              <span class="stage-detail">连接本地 Harness Web UI</span>
+            </div>
+            <span class="stage-state">等待</span>
+          </li>
+        </ol>
+
+        <div class="command-panel" aria-label="Harness 启动命令">
+          <div class="command-tabs">
+            <span class="is-active">一键启动</span>
+            <span>自动更新</span>
+          </div>
+          <code><span aria-hidden="true">$</span> npx @deepseek-ai/dsh web</code>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="app-footer">
+      <span>DeepSeek Harness Desktop</span>
+      <span class="footer-separator" aria-hidden="true"></span>
+      <span id="runtime-hint">环境自适应 · Windows / macOS / Linux</span>
+    </footer>
+
+    <script src="./background.js"></script>
+    <script type="module" src="./hero-whale.js"></script>
+    <script src="./loading.js"></script>
+  </body>
+</html>

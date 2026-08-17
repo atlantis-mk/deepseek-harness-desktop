@@ -1,0 +1,234 @@
+name: Package and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer without a leading v; must match package.json"
+        required: true
+        default: "0.1.0"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deepseek-harness-desktop-release-${{ github.ref }}-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.12.0
+      - id: release
+        name: Validate release version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p 'require("./package.json").version')"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            version="${REF_NAME#v}"
+            [[ "$REF_NAME" == "v$version" ]]
+          else
+            version="$DISPATCH_VERSION"
+          fi
+          node -e 'if (!require("semver").valid(process.argv[1])) process.exit(1)' "$version"
+          [[ "$version" == "$package_version" ]] || {
+            echo "Requested version $version does not match package.json $package_version" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            name: macOS Apple Silicon
+            args: --mac --arm64
+          - runner: macos-15-intel
+            name: macOS Intel
+            args: --mac --x64
+          - runner: windows-2025
+            name: Windows x64
+            args: --win --x64
+          - runner: ubuntu-24.04
+            name: Linux x64
+            args: --linux --x64
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.12.0
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build native packages
+        run: npm run dist -- ${{ matrix.args }} --publish never
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  github-release:
+    name: Publish GitHub Release assets
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: ${{ runner.temp }}/release-assets
+        run: sha256sum *.dmg *.zip *.exe *.AppImage *.deb 2>/dev/null | sort > SHA256SUMS.txt
+      - name: Create release and upload assets
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "DeepSeek Harness Desktop $TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/release-assets/"* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          {
+            echo "## DeepSeek Harness Desktop $TAG"
+            echo
+            echo "[GitHub Release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  r2-release:
+    name: Mirror immutable assets to Cloudflare R2
+    needs: [prepare, build, github-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.12.0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-assets
+          merge-multiple: true
+      - id: r2
+        name: Check R2 configuration
+        run: |
+          if [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" && -n "$R2_ACCOUNT_ID" && -n "$R2_BUCKET" && -n "$R2_PUBLIC_BASE_URL" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "R2 was skipped because one or more repository secrets/variables are missing." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.r2.outputs.configured == 'true'
+        name: Create R2 release manifest
+        run: |
+          node scripts/create-release-manifest.mjs \
+            --input "$RUNNER_TEMP/release-assets" \
+            --output "$RUNNER_TEMP/latest.json" \
+            --version "$VERSION" \
+            --base-url "$R2_PUBLIC_BASE_URL" \
+            --repository "$GITHUB_REPOSITORY"
+      - if: steps.r2.outputs.configured == 'true'
+        name: Publish immutable version objects
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="deepseek-harness-desktop/releases/v${VERSION}"
+          for source in "$RUNNER_TEMP/release-assets/"*; do
+            name="$(basename "$source")"
+            key="$prefix/$name"
+            sha256="$(sha256sum "$source" | cut -d ' ' -f 1)"
+            existing="$(aws s3api head-object --endpoint-url "$endpoint" --bucket "$R2_BUCKET" --key "$key" --query 'Metadata.sha256' --output text 2>/dev/null || true)"
+            if [[ -n "$existing" && "$existing" != "None" ]]; then
+              [[ "$existing" == "$sha256" ]] || {
+                echo "Refusing to overwrite immutable object with different content: $key" >&2
+                exit 1
+              }
+              echo "Immutable object already matches: $key"
+              continue
+            fi
+            aws s3 cp "$source" "s3://${R2_BUCKET}/${key}" \
+              --endpoint-url "$endpoint" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --metadata "sha256=$sha256" \
+              --no-progress
+          done
+      - if: steps.r2.outputs.configured == 'true'
+        name: Publish latest manifest last and verify publicly
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          key="deepseek-harness-desktop/latest.json"
+          aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${R2_BUCKET}/${key}" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json" \
+            --cache-control "no-store, max-age=0" \
+            --no-progress
+          public_url="${R2_PUBLIC_BASE_URL%/}/${key}"
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error "$public_url" --output "$RUNNER_TEMP/public-latest.json" \
+              && cmp -s "$RUNNER_TEMP/latest.json" "$RUNNER_TEMP/public-latest.json"; then
+              break
+            fi
+            [[ "$attempt" != "12" ]] || {
+              echo "Public R2 manifest did not converge: $public_url" >&2
+              exit 1
+            }
+            sleep 5
+          done
+          {
+            echo "## Cloudflare R2 mirror"
+            echo
+            echo "[Latest manifest]($public_url)"
+          } >> "$GITHUB_STEP_SUMMARY"
