@@ -21,7 +21,7 @@ function run(command, args, options = {}) {
   }
   const result = execFileSync(command, args, {
     encoding: 'utf8',
-    stdio: options.capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+    stdio: options.capture ? ['ignore', 'pipe', options.silent ? 'ignore' : 'inherit'] : 'inherit',
   })
   return typeof result === 'string' ? result.trim() : ''
 }
@@ -48,7 +48,7 @@ if (remoteHead !== localHead) {
 
 const tag = `v${requestedVersion}`
 try {
-  run('git', ['rev-parse', '--verify', `refs/tags/${tag}`], { capture: true })
+  run('git', ['rev-parse', '--verify', `refs/tags/${tag}`], { capture: true, silent: true })
   fail(`tag ${tag} already exists`)
 } catch (error) {
   if (error.status !== 128) throw error
