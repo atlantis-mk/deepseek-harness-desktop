@@ -334,7 +334,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 640,
     show: false,
-    backgroundColor: '#101114',
+    backgroundColor: '#0a0a0a',
     title: 'DeepSeek Harness Desktop',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

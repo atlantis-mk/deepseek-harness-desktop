@@ -7,6 +7,16 @@ const progressValue = document.querySelector('#progress-value')
 const retry = document.querySelector('#retry')
 const stages = [...document.querySelectorAll('.stage')]
 
+// Let the shell paint before compiling the decorative WebGL scenes. Starting
+// those scenes during HTML evaluation used to make the entry animations miss
+// their first frames on slower GPUs.
+window.requestAnimationFrame(() => {
+  window.requestAnimationFrame(() => {
+    document.body.classList.add('is-shell-ready')
+    window.dispatchEvent(new CustomEvent('startup-shell-ready'))
+  })
+})
+
 function resolveStage(status) {
   const text = `${status.message || ''} ${status.detail || ''}`
   if (/已启动|界面|等待 Harness|本地端口|Web UI/i.test(text)) return 3

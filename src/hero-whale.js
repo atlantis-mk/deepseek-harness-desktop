@@ -1,8 +1,11 @@
-import * as THREE from '../node_modules/three/build/three.module.min.js'
-
 const stage = document.querySelector('#hero-whale-stage')
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const lowPowerDevice =
+  (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+  (navigator.deviceMemory && navigator.deviceMemory <= 4)
+let heroStarted = false
 
-if (stage && !window.matchMedia('(max-width: 767px)').matches) {
+function initializeHeroWhale(THREE) {
   const lightParams = {
     x: 4.5,
     y: 5.5,
@@ -15,7 +18,6 @@ if (stage && !window.matchMedia('(max-width: 767px)').matches) {
   const mouseParams = { radius: 4.9, strength: 0.8, decay: 0.2, distort: 5 }
   const pointer = { x: 0, y: 0, active: false, moved: false }
   const smoothedPointer = new THREE.Vector2(0, 0)
-  const startedAt = performance.now()
   let visible = true
   let lastFrame = 0
 
@@ -117,9 +119,9 @@ if (stage && !window.matchMedia('(max-width: 767px)').matches) {
   }
 
   function createScene(pixelData) {
-    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true })
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: !lowPowerDevice })
     renderer.setClearColor(0x000000, 0)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, lowPowerDevice ? 0.85 : 1.15))
     renderer.setSize(800, 800, false)
     renderer.domElement.dataset.engine = `three.js r${THREE.REVISION}`
     stage.appendChild(renderer.domElement)
@@ -310,14 +312,19 @@ if (stage && !window.matchMedia('(max-width: 767px)').matches) {
     const inverseWorld = new THREE.Matrix4()
     const localMouse = new THREE.Vector3()
     const clock = new THREE.Clock()
+    // Start assembly when the scene is actually ready. Previously this timer
+    // began before Three.js and the SVG had loaded, so the reveal could jump to
+    // its final state when startup was busy.
+    const startedAt = performance.now()
+    const frameInterval = 1000 / (lowPowerDevice ? 24 : 30)
 
     function render(timestamp) {
       window.requestAnimationFrame(render)
-      if (!visible || document.hidden || timestamp - lastFrame < 1000 / 30) return
-      lastFrame = timestamp
+      if (!visible || document.hidden || timestamp - lastFrame < frameInterval) return
+      lastFrame = timestamp - ((timestamp - lastFrame) % frameInterval)
 
       const elapsed = clock.getElapsedTime()
-      const assemblyElapsed = (performance.now() - startedAt) * 0.001 - 0.3
+      const assemblyElapsed = (timestamp - startedAt) * 0.001 - 0.3
       const linearAssembly = Math.max(0, Math.min(1, assemblyElapsed / 2.5))
       const assembly = 1 - (1 - linearAssembly) ** 3
 
@@ -407,3 +414,35 @@ if (stage && !window.matchMedia('(max-width: 767px)').matches) {
     if (document.hidden) pointer.active = false
   })
 }
+
+function startHeroWhale() {
+  if (
+    heroStarted ||
+    !stage ||
+    reducedMotion ||
+    window.matchMedia('(max-width: 767px)').matches
+  ) {
+    return
+  }
+  heroStarted = true
+
+  const load = async () => {
+    try {
+      const THREE = await import('../node_modules/three/build/three.module.min.js')
+      initializeHeroWhale(THREE)
+    } catch (error) {
+      console.warn('[hero-whale] unable to start', error)
+    }
+  }
+
+  window.setTimeout(() => {
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(load, { timeout: 600 })
+    } else {
+      void load()
+    }
+  }, 380)
+}
+
+window.addEventListener('startup-shell-ready', startHeroWhale, { once: true })
+window.setTimeout(startHeroWhale, 1_000)

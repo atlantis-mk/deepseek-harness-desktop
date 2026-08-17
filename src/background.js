@@ -1,6 +1,10 @@
 (() => {
   const fluidCanvas = document.querySelector('#fluid-canvas')
   const gridCanvas = document.querySelector('#grid-canvas')
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const lowPowerDevice =
+    (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+    (navigator.deviceMemory && navigator.deviceMemory <= 4)
 
   const params = {
     mouseRadius: 0.09,
@@ -344,7 +348,10 @@
       return { framebuffer, texture }
     }
 
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+    // This is a full-window procedural shader. Rendering it above CSS-pixel
+    // resolution adds a lot of GPU work with almost no visible benefit behind
+    // the grain and gradient layers.
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, lowPowerDevice ? 0.8 : 1)
     let width = Math.round(canvas.clientWidth * pixelRatio)
     let height = Math.round(canvas.clientHeight * pixelRatio)
     canvas.width = width
@@ -364,6 +371,7 @@
     let visible = true
     let animationFrame = 0
     let lastFrame = 0
+    let revealed = false
     const startedAt = performance.now()
     const pointer = {
       x: 0.5,
@@ -378,6 +386,7 @@
       ? navigator.userAgentData.platform === 'Windows'
       : navigator.userAgent.includes('Windows')
     const interactive = !coarsePointer && !isWindows
+    const frameInterval = 1000 / (lowPowerDevice ? 24 : 30)
 
     function updatePointer(event) {
       const bounds = canvas.getBoundingClientRect()
@@ -388,10 +397,10 @@
 
     function render(timestamp) {
       animationFrame = window.requestAnimationFrame(render)
-      if (!visible || timestamp - lastFrame < 1000 / 30) return
-      lastFrame = timestamp - ((timestamp - lastFrame) % (1000 / 30))
+      if (document.hidden || !visible || timestamp - lastFrame < frameInterval) return
+      lastFrame = timestamp - ((timestamp - lastFrame) % frameInterval)
 
-      const nextRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+      const nextRatio = Math.min(window.devicePixelRatio || 1, lowPowerDevice ? 0.8 : 1)
       const nextWidth = Math.round(canvas.clientWidth * nextRatio)
       const nextHeight = Math.round(canvas.clientHeight * nextRatio)
       if (nextWidth !== width || nextHeight !== height) {
@@ -439,7 +448,7 @@
       gl.uniform1i(fluidUniforms.flowmap, 0)
       gl.uniform1f(
         fluidUniforms.time,
-        (performance.now() - startedAt) * 0.001 * (params.speed / 100),
+        (timestamp - startedAt) * 0.001 * (params.speed / 100),
       )
       gl.uniform2f(fluidUniforms.resolution, width, height)
       gl.uniform1f(fluidUniforms.scale, params.scale)
@@ -469,6 +478,11 @@
         gl.uniform3f(fluidUniforms[`c${index + 1}`], rgb[0], rgb[1], rgb[2])
       })
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+
+      if (!revealed) {
+        revealed = true
+        document.body.classList.add('is-fluid-ready')
+      }
     }
 
     const observer = new IntersectionObserver(
@@ -483,9 +497,9 @@
 
   function startGrid(canvas) {
     if (!canvas || window.matchMedia('(hover: none), (pointer: coarse)').matches) return
-    const context = canvas.getContext('2d')
+    const context = canvas.getContext('2d', { alpha: true, desynchronized: true })
     if (!context) return
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 1)
     const pointer = { x: Number.NaN, y: Number.NaN }
     const points = []
     let width = canvas.clientWidth
@@ -541,7 +555,7 @@
 
     function render(timestamp) {
       window.requestAnimationFrame(render)
-      if (timestamp - lastFrame < 1000 / 30) return
+      if (document.hidden || timestamp - lastFrame < 1000 / 30) return
       lastFrame = timestamp - ((timestamp - lastFrame) % (1000 / 30))
       const nextWidth = canvas.clientWidth
       const nextHeight = canvas.clientHeight
@@ -606,6 +620,30 @@
     window.requestAnimationFrame(render)
   }
 
-  startFluid(fluidCanvas)
-  startGrid(gridCanvas)
+  let started = false
+  function startVisuals() {
+    if (started) return
+    started = true
+    if (reducedMotion) return
+
+    const startFluidWhenIdle = () => startFluid(fluidCanvas)
+    window.setTimeout(() => {
+      if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(startFluidWhenIdle, { timeout: 320 })
+      } else {
+        startFluidWhenIdle()
+      }
+    }, 160)
+
+    // The grid is secondary decoration. Staggering it keeps its canvas setup
+    // away from the fluid shader compilation and the page entry transition.
+    if (!reducedMotion && !lowPowerDevice) {
+      window.setTimeout(() => startGrid(gridCanvas), 650)
+    }
+  }
+
+  window.addEventListener('startup-shell-ready', startVisuals, { once: true })
+  // Fallback for unusual script scheduling where the custom event was emitted
+  // before this listener was installed.
+  window.setTimeout(startVisuals, 800)
 })()
