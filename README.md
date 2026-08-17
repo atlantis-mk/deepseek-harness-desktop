@@ -16,7 +16,7 @@ DeepSeek Harness Desktop 是 [DeepSeek Harness](https://github.com/deepseek-ai/D
 - Windows：x64 NSIS 安装包
 - Linux：x64 AppImage 或 Debian 包
 
-发布资产同时镜像到 Cloudflare R2。最新版本清单：
+配置 R2 发布凭据后，发布资产会同时镜像到 Cloudflare R2。最新版本清单地址为：
 
 - [R2 latest.json](https://pub-bf5092e77ab5409ba39fb34c4a76c1b1.r2.dev/deepseek-harness-desktop/latest.json)
 
