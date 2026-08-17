@@ -19,10 +19,11 @@ function run(command, args, options = {}) {
     console.log(`[dry-run] ${rendered}`)
     return ''
   }
-  return execFileSync(command, args, {
+  const result = execFileSync(command, args, {
     encoding: 'utf8',
     stdio: options.capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
-  }).trim()
+  })
+  return typeof result === 'string' ? result.trim() : ''
 }
 
 if (!requestedVersion || !semver.valid(requestedVersion) || semver.prerelease(requestedVersion)) {
