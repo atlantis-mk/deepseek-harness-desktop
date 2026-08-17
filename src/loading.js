@@ -20,7 +20,7 @@ window.requestAnimationFrame(() => {
 function resolveStage(status) {
   const text = `${status.message || ''} ${status.detail || ''}`
   if (/已启动|界面|等待 Harness|本地端口|Web UI/i.test(text)) return 3
-  if (/准备 DeepSeek Harness|安装或读取缓存|插件|依赖/i.test(text)) return 2
+  if (/准备 DeepSeek Harness|安装 DeepSeek Harness|更新 DeepSeek Harness|插件|依赖/i.test(text)) return 2
   if (/Harness 更新|npm 官方|版本|联网检查/i.test(text)) return 1
   return 0
 }
@@ -86,8 +86,8 @@ if (window.desktopRuntime) {
       detail: '正在连接 npm 官方软件源并同步最新可用版本。',
     },
     install: {
-      message: '正在准备 DeepSeek Harness',
-      detail: '安装或读取本地缓存：@deepseek-ai/dsh@latest',
+      message: '正在安装 DeepSeek Harness',
+      detail: '根据 Node.js 环境安装到用户全局目录或应用私有目录。',
       progress: 68,
     },
     ready: {

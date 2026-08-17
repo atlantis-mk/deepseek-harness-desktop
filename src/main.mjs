@@ -13,11 +13,17 @@ import {
   shell,
   Tray,
 } from 'electron'
+import {
+  DSH_PACKAGE_NAME,
+  findUserDshInstallation,
+  getGlobalNpmBinDirectory,
+  isDshUpdateRequired,
+  updateGlobalDsh,
+} from './dsh-runtime.mjs'
 import { resolveNodeEnvironment } from './node-runtime.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STARTUP_TIMEOUT_MS = 10 * 60_000
-const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'
 const DSH_REGISTRY_URL = 'https://registry.npmjs.org/@deepseek-ai%2fdsh/latest'
 
 let mainWindow = null
@@ -117,7 +123,7 @@ async function waitForHarness(url, child, timeoutMs = STARTUP_TIMEOUT_MS) {
   throw new Error(`Harness 在 ${Math.round(timeoutMs / 1000)} 秒内未能启动。`)
 }
 
-async function resolveLatestDshPackage() {
+async function resolveLatestDshVersion() {
   emitStatus('正在检查 Harness 更新', '查询 npm 官方软件源', null)
   try {
     const response = await electronNet.fetch(DSH_REGISTRY_URL, {
@@ -128,11 +134,11 @@ async function resolveLatestDshPackage() {
     if (!manifest || typeof manifest.version !== 'string') {
       throw new Error('npm 返回的版本信息无效')
     }
-    return `${DSH_PACKAGE_NAME}@${manifest.version}`
+    return manifest.version
   } catch (error) {
-    console.warn('[dsh] update check failed, falling back to npm cache', error)
-    emitStatus('无法联网检查 Harness 更新', '尝试使用 npm 缓存中的可用版本', null)
-    return `${DSH_PACKAGE_NAME}@latest`
+    console.warn('[dsh] update check failed', error)
+    emitStatus('无法联网检查 Harness 更新', '如已安装，将继续使用当前版本', null)
+    return null
   }
 }
 
@@ -147,16 +153,65 @@ function stopHarness() {
   timer.unref()
 }
 
-function buildHarnessEnvironment(nodeEnvironment) {
+function buildHarnessEnvironment(nodeEnvironment, additionalBinDirs = []) {
   const nodeDir = path.dirname(nodeEnvironment.nodePath)
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
   const inheritedPath = process.env[pathKey] ?? ''
   return {
     ...process.env,
-    [pathKey]: [nodeDir, inheritedPath].filter(Boolean).join(path.delimiter),
+    [pathKey]: [nodeDir, ...additionalBinDirs, inheritedPath]
+      .filter(Boolean)
+      .join(path.delimiter),
     DSH_HOME: path.join(app.getPath('userData'), 'dsh-home'),
-    npm_config_cache: path.join(app.getPath('userData'), 'npm-cache'),
     npm_config_progress: 'false',
+  }
+}
+
+async function prepareDshInstallation(nodeEnvironment, latestVersion, env) {
+  const isSystemRuntime = nodeEnvironment.source === 'system'
+  const scopeLabel = isSystemRuntime ? '用户全局环境' : '应用私有环境'
+  const installed = await findUserDshInstallation({
+    nodeEnvironment,
+    platform: process.platform,
+    env,
+    includePath: isSystemRuntime,
+  })
+
+  if (installed && !isDshUpdateRequired(installed.version, latestVersion)) {
+    const versionState = latestVersion ? '已是最新版本' : '使用已安装版本'
+    emitStatus('DeepSeek Harness 已就绪', `${versionState} ${installed.version} · ${scopeLabel}`, null)
+    return installed
+  }
+
+  const targetVersion = latestVersion ?? 'latest'
+  const isUpdate = Boolean(installed)
+  emitStatus(
+    isUpdate ? '正在更新 DeepSeek Harness' : '正在安装 DeepSeek Harness',
+    `${scopeLabel} · ${DSH_PACKAGE_NAME}@${targetVersion}`,
+    null,
+  )
+
+  try {
+    const installation = await updateGlobalDsh({
+      nodeEnvironment,
+      version: targetVersion,
+      platform: process.platform,
+      env,
+    })
+    if (!installation) throw new Error('npm 完成后未找到 dsh 全局安装')
+    return installation
+  } catch (error) {
+    if (installed) {
+      console.warn('[dsh] update failed, using installed version', error)
+      emitStatus(
+        'Harness 更新失败',
+        `继续使用已安装版本 ${installed.version} · ${scopeLabel}`,
+        null,
+      )
+      return installed
+    }
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`无法在${scopeLabel}安装 DeepSeek Harness：${reason}`)
   }
 }
 
@@ -178,25 +233,39 @@ async function launchHarness() {
     null,
   )
 
+  const baseEnvironment = buildHarnessEnvironment(nodeEnvironment)
+  const globalBinDir = await getGlobalNpmBinDirectory({
+    nodeEnvironment,
+    platform: process.platform,
+    env: baseEnvironment,
+  })
+  const installEnvironment = buildHarnessEnvironment(nodeEnvironment, [globalBinDir])
+  const latestVersion = await resolveLatestDshVersion()
+  const dshInstallation = await prepareDshInstallation(
+    nodeEnvironment,
+    latestVersion,
+    installEnvironment,
+  )
+
   const port = await getAvailablePort()
   const url = `http://127.0.0.1:${port}`
   const workspacePath = app.isPackaged ? app.getPath('documents') : process.cwd()
-  const dshPackage = await resolveLatestDshPackage()
-  emitStatus('正在准备 DeepSeek Harness', `安装或读取缓存：${dshPackage}`, null)
+  const harnessEnvironment = buildHarnessEnvironment(nodeEnvironment, [
+    dshInstallation.binDir,
+    globalBinDir,
+  ])
 
   const child = spawn(
     nodeEnvironment.nodePath,
     [
-      nodeEnvironment.npxCliPath,
-      '--yes',
-      dshPackage,
+      dshInstallation.binPath,
       'web',
       '--port',
       String(port),
     ],
     {
       cwd: workspacePath,
-      env: buildHarnessEnvironment(nodeEnvironment),
+      env: harnessEnvironment,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -223,7 +292,11 @@ async function launchHarness() {
     })
   })
 
-  emitStatus('正在等待 Harness 界面', `首次安装依赖较多，请保持网络连接 · ${url}`, null)
+  emitStatus(
+    '正在等待 Harness 界面',
+    `启动版本 ${dshInstallation.version} · ${url}`,
+    null,
+  )
   await waitForHarness(url, child)
   harnessReady = true
   harnessOrigin = new URL(url).origin

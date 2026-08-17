@@ -51,12 +51,12 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
 ## 首次启动
 
 1. 打开 DeepSeek Harness Desktop。
-2. 应用检查本机是否存在兼容的 Node.js 与 `npx`。
+2. 应用检查本机是否存在兼容的 Node.js 与全局安装的 `dsh`。
 3. 如果没有，应用下载并校验一份仅供自身使用的私有 Node.js runtime。
-4. 应用从 npm 获取最新可用的 `@deepseek-ai/dsh`，在空闲的 localhost 端口启动 Web UI。
+4. 使用系统 Node.js 时，应用在用户的 npm 全局环境安装或更新 `@deepseek-ai/dsh`；使用私有 Node.js 时，Harness 同步安装或更新到私有 runtime。
 5. 健康检查通过后，桌面窗口自动进入 Harness。
 
-首次启动需要联网访问 Node.js、npm 与 DeepSeek Harness 相关服务，耗时取决于网络状况。之后会优先复用已准备的 runtime 与 npm 缓存；启动失败时可以在启动页直接重试。
+首次启动需要联网访问 Node.js、npm 与 DeepSeek Harness 相关服务，耗时取决于网络状况。之后直接复用对应环境中已安装的 Harness；启动失败时可以在启动页直接重试。
 
 ## 主要功能
 
@@ -65,7 +65,7 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
 | 一键启动 | 自动运行 `@deepseek-ai/dsh web`，无需手动使用终端 |
 | 环境自适应 | 优先使用兼容的系统 Node.js，否则安装应用私有 runtime |
 | 安全校验 | 下载的 Node.js 官方归档通过固定 SHA-256 校验后才会安装 |
-| 自动同步 | 每次启动查询 npm registry，并运行最新可用的 DSH 版本 |
+| 自动同步 | 每次启动查询 npm registry，并在用户全局环境或应用私有环境中原位更新 DSH |
 | 本地优先 | Harness 服务绑定 `127.0.0.1`，工作状态与缓存保存在本机 |
 | 启动可视化 | 展示运行环境、版本同步、插件装载和界面就绪四个阶段 |
 | 原生体验 | 集成桌面窗口、系统托盘、后台进程管理与失败重试 |
@@ -82,12 +82,15 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
    │
    └─ 查询 @deepseek-ai/dsh 最新版本
    │
+   └─ 系统 Node.js → 复用/更新用户全局 dsh
+   │  私有 Node.js → 复用/更新私有全局 dsh
+   │
    └─ 在 127.0.0.1 的空闲端口启动 Harness
    │
    └─ 健康检查通过 → 加载 Web UI
 ```
 
-托管 runtime、npm cache 和 `DSH_HOME` 位于 Electron 的 `userData` 目录。打包后的应用以用户的“文档”目录作为默认工作目录；开发模式使用当前项目目录。
+托管 runtime 与 `DSH_HOME` 位于 Electron 的 `userData` 目录。打包后的应用以用户的“文档”目录作为默认工作目录；开发模式使用当前项目目录。
 
 关闭窗口时应用会保留在系统托盘。从托盘可以重新显示窗口、在默认浏览器中打开当前 Harness，或完全退出并停止后台进程。
 
