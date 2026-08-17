@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { test } from 'node:test'
 import {
   MANAGED_NODE_VERSION,
@@ -47,7 +48,7 @@ test('rejects ZIP traversal, absolute paths, drive paths, and symlinks by path',
   assert.throws(() => validateZipEntry('C:\\escape\\node.exe', root), /不安全路径/)
   assert.equal(
     validateZipEntry('node-v24/bin/node', root).destination,
-    '/tmp/safe-node-runtime/node-v24/bin/node',
+    path.resolve(root, 'node-v24/bin/node'),
   )
 })
 

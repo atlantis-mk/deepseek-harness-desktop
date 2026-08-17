@@ -2,7 +2,10 @@
   "name": "deepseek-harness-desktop",
   "version": "0.1.0",
   "description": "Electron desktop launcher for DeepSeek Harness with managed Node.js fallback",
-  "author": "atlantis-mk and DeepSeek Harness Desktop contributors",
+  "author": {
+    "name": "atlantis-mk and DeepSeek Harness Desktop contributors",
+    "email": "atlanxg@gmail.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/atlantis-mk/deepseek-harness-desktop#readme",
   "repository": {
