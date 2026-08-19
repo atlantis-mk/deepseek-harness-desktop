@@ -14,6 +14,7 @@ import {
   Tray,
 } from 'electron'
 import {
+  buildHarnessEnvironment,
   DSH_PACKAGE_NAME,
   findUserDshInstallation,
   getGlobalNpmBinDirectory,
@@ -151,20 +152,6 @@ function stopHarness() {
     if (child.exitCode === null) child.kill('SIGKILL')
   }, 5_000)
   timer.unref()
-}
-
-function buildHarnessEnvironment(nodeEnvironment, additionalBinDirs = []) {
-  const nodeDir = path.dirname(nodeEnvironment.nodePath)
-  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
-  const inheritedPath = process.env[pathKey] ?? ''
-  return {
-    ...process.env,
-    [pathKey]: [nodeDir, ...additionalBinDirs, inheritedPath]
-      .filter(Boolean)
-      .join(path.delimiter),
-    DSH_HOME: path.join(app.getPath('userData'), 'dsh-home'),
-    npm_config_progress: 'false',
-  }
 }
 
 async function prepareDshInstallation(nodeEnvironment, latestVersion, env) {

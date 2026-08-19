@@ -8,6 +8,23 @@ const execFileAsync = promisify(execFile)
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'
 
+export function buildHarnessEnvironment(
+  nodeEnvironment,
+  additionalBinDirs = [],
+  env = process.env,
+) {
+  const nodeDir = path.dirname(nodeEnvironment.nodePath)
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
+  const inheritedPath = env[pathKey] ?? ''
+  return {
+    ...env,
+    [pathKey]: [nodeDir, ...additionalBinDirs, inheritedPath]
+      .filter(Boolean)
+      .join(path.delimiter),
+    npm_config_progress: 'false',
+  }
+}
+
 function npmCliPath(nodeEnvironment) {
   return path.join(path.dirname(nodeEnvironment.npxCliPath), 'npm-cli.js')
 }

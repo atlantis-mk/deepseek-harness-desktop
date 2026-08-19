@@ -4,9 +4,30 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
+  buildHarnessEnvironment,
   inspectDshPackage,
   isDshUpdateRequired,
 } from '../src/dsh-runtime.mjs'
+
+test('uses the same DSH_HOME as the command-line environment', () => {
+  const withoutDshHome = buildHarnessEnvironment(
+    { nodePath: '/managed/node/bin/node' },
+    ['/global/bin'],
+    { PATH: '/usr/bin' },
+  )
+  assert.equal(Object.hasOwn(withoutDshHome, 'DSH_HOME'), false)
+  assert.equal(
+    withoutDshHome.PATH,
+    ['/managed/node/bin', '/global/bin', '/usr/bin'].join(path.delimiter),
+  )
+
+  const withDshHome = buildHarnessEnvironment(
+    { nodePath: '/managed/node/bin/node' },
+    [],
+    { PATH: '/usr/bin', DSH_HOME: '/shared/dsh-home' },
+  )
+  assert.equal(withDshHome.DSH_HOME, '/shared/dsh-home')
+})
 
 test('detects an installed dsh package and its executable', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-package-'))

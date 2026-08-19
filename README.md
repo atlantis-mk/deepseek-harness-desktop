@@ -90,7 +90,7 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
    └─ 健康检查通过 → 加载 Web UI
 ```
 
-托管 runtime 与 `DSH_HOME` 位于 Electron 的 `userData` 目录。打包后的应用以用户的“文档”目录作为默认工作目录；开发模式使用当前项目目录。
+托管 runtime 位于 Electron 的 `userData` 目录。桌面端不会覆盖 `DSH_HOME`：默认与命令行共用 `~/.dsh`，因此通过 `dsh plugin --profile web add ...` 安装的插件会在桌面端下次启动时生效；如果启动环境显式设置了 `DSH_HOME`，桌面端会原样继承。打包后的应用以用户的“文档”目录作为默认工作目录；开发模式使用当前项目目录。
 
 关闭窗口时应用会保留在系统托盘。从托盘可以重新显示窗口、在默认浏览器中打开当前 Harness，或完全退出并停止后台进程。
 
