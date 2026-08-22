@@ -7,6 +7,8 @@ import {
   buildHarnessEnvironment,
   inspectDshPackage,
   isDshUpdateRequired,
+  readDshUpdateCache,
+  writeDshUpdateCache,
 } from '../src/dsh-runtime.mjs'
 
 test('uses the same DSH_HOME as the command-line environment', () => {
@@ -71,4 +73,29 @@ test('updates dsh only when the installed version is older', () => {
   assert.equal(isDshUpdateRequired('0.1.0-rc.6', '0.1.0-rc.6'), false)
   assert.equal(isDshUpdateRequired('0.2.0', '0.1.0-rc.6'), false)
   assert.equal(isDshUpdateRequired('invalid', '0.1.0-rc.6'), false)
+})
+
+test('persists and validates the dsh update-check cache', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-update-cache-'))
+  const cachePath = path.join(root, 'nested', 'dsh-update.json')
+  try {
+    await writeDshUpdateCache(cachePath, 'v0.1.0-rc.6', 123456)
+    assert.deepEqual(await readDshUpdateCache(cachePath), {
+      version: '0.1.0-rc.6',
+      checkedAt: 123456,
+      successful: true,
+    })
+
+    await writeDshUpdateCache(cachePath, '0.1.0-rc.6', 123457, false)
+    assert.deepEqual(await readDshUpdateCache(cachePath), {
+      version: '0.1.0-rc.6',
+      checkedAt: 123457,
+      successful: false,
+    })
+
+    await writeFile(cachePath, '{"version":"invalid","checkedAt":123456}')
+    assert.equal(await readDshUpdateCache(cachePath), null)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })

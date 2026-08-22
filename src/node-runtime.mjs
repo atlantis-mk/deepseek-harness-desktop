@@ -78,6 +78,17 @@ function managedNpxCliRelativePath(platform = process.platform) {
     : path.join('lib', 'node_modules', 'npm', 'bin', 'npx-cli.js')
 }
 
+function managedNodeInstallDirectory(
+  runtimeRoot,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  return path.join(
+    runtimeRoot,
+    `node-v${MANAGED_NODE_VERSION}-${platform}-${arch}`,
+  )
+}
+
 async function fileExists(filePath) {
   try {
     await access(filePath)
@@ -306,6 +317,22 @@ async function assertManagedRuntime(runtimeDir, platform = process.platform) {
   }
 }
 
+export async function findInstalledManagedNode({
+  runtimeRoot,
+  platform = process.platform,
+  arch = process.arch,
+}) {
+  const installDir = managedNodeInstallDirectory(runtimeRoot, platform, arch)
+  if (!(await fileExists(installDir))) return null
+
+  try {
+    return await assertManagedRuntime(installDir, platform)
+  } catch {
+    await rm(installDir, { recursive: true, force: true })
+    return null
+  }
+}
+
 export async function ensureManagedNode({
   runtimeRoot,
   platform = process.platform,
@@ -314,17 +341,9 @@ export async function ensureManagedNode({
   onProgress,
 }) {
   const artifact = getNodeArtifact(platform, arch)
-  const installDir = path.join(
-    runtimeRoot,
-    `node-v${MANAGED_NODE_VERSION}-${platform}-${arch}`,
-  )
-  if (await fileExists(installDir)) {
-    try {
-      return await assertManagedRuntime(installDir, platform)
-    } catch {
-      await rm(installDir, { recursive: true, force: true })
-    }
-  }
+  const installDir = managedNodeInstallDirectory(runtimeRoot, platform, arch)
+  const installed = await findInstalledManagedNode({ runtimeRoot, platform, arch })
+  if (installed) return installed
 
   await mkdir(runtimeRoot, { recursive: true })
   const stagingRoot = await mkdtemp(path.join(runtimeRoot, '.node-install-'))
@@ -357,6 +376,13 @@ export async function ensureManagedNode({
 }
 
 export async function resolveNodeEnvironment(options) {
+  // Once the app has provisioned a private runtime, prefer that known-good path.
+  // This avoids spawning a login shell on every subsequent application launch.
+  if (!process.env.DSH_DESKTOP_NODE) {
+    const managed = await findInstalledManagedNode(options)
+    if (managed) return managed
+  }
+
   const system = await findCompatibleSystemNode(options)
   if (system) return system
   return ensureManagedNode(options)

@@ -23,15 +23,19 @@ import {
   buildHarnessEnvironment,
   DSH_PACKAGE_NAME,
   findUserDshInstallation,
-  getGlobalNpmBinDirectory,
   isDshUpdateRequired,
+  readDshUpdateCache,
   updateGlobalDsh,
+  writeDshUpdateCache,
 } from './dsh-runtime.mjs'
 import { resolveNodeEnvironment } from './node-runtime.mjs'
+import { readStartupCache, writeStartupCache } from './startup-cache.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STARTUP_TIMEOUT_MS = 10 * 60_000
 const DSH_REGISTRY_URL = 'https://registry.npmjs.org/@deepseek-ai%2fdsh/latest'
+const DSH_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000
+const DSH_UPDATE_RETRY_INTERVAL_MS = 5 * 60_000
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000
 
 let mainWindow = null
@@ -136,7 +140,17 @@ async function waitForHarness(url, child, timeoutMs = STARTUP_TIMEOUT_MS) {
   throw new Error(`Harness 在 ${Math.round(timeoutMs / 1000)} 秒内未能启动。`)
 }
 
-async function resolveLatestDshVersion() {
+async function resolveLatestDshVersion(installedVersion = null) {
+  const cachePath = path.join(app.getPath('userData'), 'cache', 'dsh-update.json')
+  const cached = await readDshUpdateCache(cachePath)
+  const cacheMaxAge = cached?.successful
+    ? DSH_UPDATE_CHECK_INTERVAL_MS
+    : DSH_UPDATE_RETRY_INTERVAL_MS
+  if (cached && Date.now() - cached.checkedAt < cacheMaxAge) {
+    emitStatus('Harness 版本检查完成', `复用最近检查结果 ${cached.version}`, null)
+    return cached.version
+  }
+
   emitStatus('正在检查 Harness 更新', '查询 npm 官方软件源', null)
   try {
     const response = await electronNet.fetch(DSH_REGISTRY_URL, {
@@ -147,11 +161,20 @@ async function resolveLatestDshVersion() {
     if (!manifest || typeof manifest.version !== 'string') {
       throw new Error('npm 返回的版本信息无效')
     }
+    await writeDshUpdateCache(cachePath, manifest.version)
     return manifest.version
   } catch (error) {
     console.warn('[dsh] update check failed', error)
     emitStatus('无法联网检查 Harness 更新', '如已安装，将继续使用当前版本', null)
-    return null
+    const fallbackVersion = cached?.version ?? installedVersion
+    if (fallbackVersion) {
+      try {
+        await writeDshUpdateCache(cachePath, fallbackVersion, Date.now(), false)
+      } catch (cacheError) {
+        console.warn('[dsh] unable to cache failed update check', cacheError)
+      }
+    }
+    return fallbackVersion
   }
 }
 
@@ -166,15 +189,9 @@ function stopHarness() {
   timer.unref()
 }
 
-async function prepareDshInstallation(nodeEnvironment, latestVersion, env) {
+async function prepareDshInstallation(nodeEnvironment, latestVersion, env, installed) {
   const isSystemRuntime = nodeEnvironment.source === 'system'
   const scopeLabel = isSystemRuntime ? '用户全局环境' : '应用私有环境'
-  const installed = await findUserDshInstallation({
-    nodeEnvironment,
-    platform: process.platform,
-    env,
-    includePath: isSystemRuntime,
-  })
 
   if (installed && !isDshUpdateRequired(installed.version, latestVersion)) {
     const versionState = latestVersion ? '已是最新版本' : '使用已安装版本'
@@ -215,15 +232,42 @@ async function prepareDshInstallation(nodeEnvironment, latestVersion, env) {
 }
 
 async function launchHarness() {
-  emitStatus('正在检查运行环境', '查找兼容的 Node.js 与 npx', null)
   const runtimeRoot = path.join(app.getPath('userData'), 'runtime')
-  const nodeEnvironment = await resolveNodeEnvironment({
-    runtimeRoot,
-    platform: process.platform,
-    arch: process.arch,
-    fetchImpl: electronNet.fetch,
-    onProgress: reportNodeProgress,
-  })
+  const startupCachePath = path.join(app.getPath('userData'), 'cache', 'startup.json')
+  const shouldUseStartupCache =
+    !process.env.DSH_DESKTOP_NODE && !process.env.DSH_DESKTOP_DSH
+  const startupCache = shouldUseStartupCache
+    ? await readStartupCache(startupCachePath)
+    : null
+
+  let nodeEnvironment
+  let installed
+  if (startupCache) {
+    nodeEnvironment = startupCache.nodeEnvironment
+    installed = startupCache.dshInstallation
+    emitStatus(
+      '正在复用上次运行环境',
+      `${nodeEnvironment.source === 'system' ? '用户' : '应用私有'} Node.js ${nodeEnvironment.version} · Harness ${installed.version}`,
+      null,
+    )
+  } else {
+    emitStatus('正在检查运行环境', '查找兼容的 Node.js 与 npx', null)
+    nodeEnvironment = await resolveNodeEnvironment({
+      runtimeRoot,
+      platform: process.platform,
+      arch: process.arch,
+      fetchImpl: electronNet.fetch,
+      onProgress: reportNodeProgress,
+    })
+
+    const baseEnvironment = buildHarnessEnvironment(nodeEnvironment)
+    installed = await findUserDshInstallation({
+      nodeEnvironment,
+      platform: process.platform,
+      env: baseEnvironment,
+      includePath: nodeEnvironment.source === 'system',
+    })
+  }
 
   const runtimeLabel = nodeEnvironment.source === 'system' ? '用户 Node.js' : '应用私有 Node.js'
   emitStatus(
@@ -233,25 +277,26 @@ async function launchHarness() {
   )
 
   const baseEnvironment = buildHarnessEnvironment(nodeEnvironment)
-  const globalBinDir = await getGlobalNpmBinDirectory({
-    nodeEnvironment,
-    platform: process.platform,
-    env: baseEnvironment,
-  })
-  const installEnvironment = buildHarnessEnvironment(nodeEnvironment, [globalBinDir])
-  const latestVersion = await resolveLatestDshVersion()
+  const latestVersion = await resolveLatestDshVersion(installed?.version)
   const dshInstallation = await prepareDshInstallation(
     nodeEnvironment,
     latestVersion,
-    installEnvironment,
+    baseEnvironment,
+    installed,
   )
+  if (shouldUseStartupCache) {
+    try {
+      await writeStartupCache(startupCachePath, nodeEnvironment, dshInstallation)
+    } catch (error) {
+      console.warn('[startup] unable to persist environment cache', error)
+    }
+  }
 
   const port = await getAvailablePort()
   const url = `http://127.0.0.1:${port}`
   const workspacePath = app.isPackaged ? app.getPath('documents') : process.cwd()
   const harnessEnvironment = buildHarnessEnvironment(nodeEnvironment, [
     dshInstallation.binDir,
-    globalBinDir,
   ])
 
   const child = spawn(

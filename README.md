@@ -71,12 +71,12 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 ## 首次启动
 
 1. 打开 DeepSeek Harness Desktop。
-2. 应用检查本机是否存在兼容的 Node.js 与全局安装的 `dsh`。
+2. 首次启动时，应用检查本机是否存在兼容的 Node.js 与全局安装的 `dsh`。
 3. 如果没有，应用下载并校验一份仅供自身使用的私有 Node.js runtime。
 4. 使用系统 Node.js 时，应用在用户的 npm 全局环境安装或更新 `@deepseek-ai/dsh`；使用私有 Node.js 时，Harness 同步安装或更新到私有 runtime。
-5. 健康检查通过后，桌面窗口自动进入 Harness。
+5. 健康检查通过后，桌面窗口自动进入 Harness，并保存已验证的启动环境快照。
 
-首次启动需要联网访问 Node.js、npm 与 DeepSeek Harness 相关服务，耗时取决于网络状况。之后直接复用对应环境中已安装的 Harness；启动失败时可以在启动页直接重试。
+首次启动需要联网访问 Node.js、npm 与 DeepSeek Harness 相关服务，耗时取决于网络状况。后续启动直接复用上次已验证的 Node.js 与 Harness 路径，仅在缓存失效时重新检测环境；Harness 更新检查结果会短期缓存，避免频繁联网阻塞启动。启动失败时可以在启动页直接重试。
 
 ## 主要功能
 
@@ -85,7 +85,7 @@ xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
 | 一键启动 | 自动运行 `@deepseek-ai/dsh web`，无需手动使用终端 |
 | 环境自适应 | 优先使用兼容的系统 Node.js，否则安装应用私有 runtime |
 | 安全校验 | 下载的 Node.js 官方归档通过固定 SHA-256 校验后才会安装 |
-| 自动同步 | 每次启动查询 npm registry，并在用户全局环境或应用私有环境中原位更新 DSH |
+| 自动同步 | 定期查询 npm registry，并在用户全局环境或应用私有环境中原位更新 DSH |
 | 桌面端自动更新 | 通过 R2 清单自动检查、下载并校验新版安装包，失败不影响当前版本运行 |
 | 本地优先 | Harness 服务绑定 `127.0.0.1`，工作状态与缓存保存在本机 |
 | 启动可视化 | 展示运行环境、版本同步、插件装载和界面就绪四个阶段 |

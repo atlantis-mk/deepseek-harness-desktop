@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
   MANAGED_NODE_VERSION,
   REQUIRED_NODE_RANGE,
+  findInstalledManagedNode,
   getNodeArtifact,
   inspectNodeInstallation,
   isCompatibleNodeVersion,
+  resolveNodeEnvironment,
   validateZipEntry,
 } from '../src/node-runtime.mjs'
 
@@ -58,4 +62,75 @@ test('detects the current development Node installation when npm is available', 
   assert.equal(installation.source, 'system')
   assert.equal(installation.nodePath, process.execPath)
   assert.match(installation.npxCliPath, /npx-cli\.js$/)
+})
+
+test('reuses an already installed managed runtime without system discovery', async () => {
+  if (process.platform === 'win32') return
+
+  const current = await inspectNodeInstallation(process.execPath, process.platform)
+  assert.ok(current)
+  const root = await mkdtemp(path.join(os.tmpdir(), 'managed-node-cache-'))
+  const runtimeDir = path.join(
+    root,
+    `node-v${MANAGED_NODE_VERSION}-${process.platform}-${process.arch}`,
+  )
+  try {
+    await mkdir(path.join(runtimeDir, 'bin'), { recursive: true })
+    await mkdir(path.join(runtimeDir, 'lib', 'node_modules', 'npm', 'bin'), {
+      recursive: true,
+    })
+    await symlink(process.execPath, path.join(runtimeDir, 'bin', 'node'))
+    await symlink(
+      current.npxCliPath,
+      path.join(runtimeDir, 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'),
+    )
+
+    const installation = await findInstalledManagedNode({
+      runtimeRoot: root,
+      platform: process.platform,
+      arch: process.arch,
+    })
+    assert.ok(installation)
+    assert.equal(installation.source, 'managed')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('keeps an explicit Node override ahead of a cached managed runtime', async () => {
+  if (process.platform === 'win32') return
+
+  const current = await inspectNodeInstallation(process.execPath, process.platform)
+  assert.ok(current)
+  const root = await mkdtemp(path.join(os.tmpdir(), 'managed-node-override-'))
+  const runtimeDir = path.join(
+    root,
+    `node-v${MANAGED_NODE_VERSION}-${process.platform}-${process.arch}`,
+  )
+  const previousOverride = process.env.DSH_DESKTOP_NODE
+  try {
+    await mkdir(path.join(runtimeDir, 'bin'), { recursive: true })
+    await mkdir(path.join(runtimeDir, 'lib', 'node_modules', 'npm', 'bin'), {
+      recursive: true,
+    })
+    await symlink(process.execPath, path.join(runtimeDir, 'bin', 'node'))
+    await symlink(
+      current.npxCliPath,
+      path.join(runtimeDir, 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'),
+    )
+
+    process.env.DSH_DESKTOP_NODE = process.execPath
+    const installation = await resolveNodeEnvironment({
+      runtimeRoot: root,
+      platform: process.platform,
+      arch: process.arch,
+    })
+    assert.ok(installation)
+    assert.equal(installation.source, 'system')
+    assert.equal(installation.nodePath, process.execPath)
+  } finally {
+    if (previousOverride === undefined) delete process.env.DSH_DESKTOP_NODE
+    else process.env.DSH_DESKTOP_NODE = previousOverride
+    await rm(root, { recursive: true, force: true })
+  }
 })

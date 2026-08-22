@@ -1,4 +1,4 @@
-import { access, readFile, realpath } from 'node:fs/promises'
+import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -7,6 +7,36 @@ import semver from 'semver'
 const execFileAsync = promisify(execFile)
 
 export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh'
+
+export async function readDshUpdateCache(cachePath) {
+  try {
+    const cached = JSON.parse(await readFile(cachePath, 'utf8'))
+    const version = semver.clean(cached?.version)
+    const checkedAt = Number(cached?.checkedAt)
+    if (!version || !Number.isFinite(checkedAt) || checkedAt <= 0) return null
+    return { version, checkedAt, successful: cached?.successful !== false }
+  } catch {
+    return null
+  }
+}
+
+export async function writeDshUpdateCache(
+  cachePath,
+  version,
+  checkedAt = Date.now(),
+  successful = true,
+) {
+  const cleanedVersion = semver.clean(version)
+  if (!cleanedVersion || !Number.isFinite(checkedAt) || checkedAt <= 0) {
+    throw new Error('无法缓存无效的 Harness 版本信息。')
+  }
+  await mkdir(path.dirname(cachePath), { recursive: true })
+  await writeFile(
+    cachePath,
+    `${JSON.stringify({ version: cleanedVersion, checkedAt, successful })}\n`,
+    'utf8',
+  )
+}
 
 export function buildHarnessEnvironment(
   nodeEnvironment,
