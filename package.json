@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Electron desktop launcher for DeepSeek Harness with managed Node.js fallback",
   "author": {
     "name": "atlantis-mk and DeepSeek Harness Desktop contributors",
