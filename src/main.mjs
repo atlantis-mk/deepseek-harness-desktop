@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process'
+import { chmod, copyFile, readdir, rename, rm } from 'node:fs/promises'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -13,6 +15,10 @@ import {
   shell,
   Tray,
 } from 'electron'
+import {
+  downloadReleaseAsset,
+  fetchAvailableUpdate,
+} from './app-update.mjs'
 import {
   buildHarnessEnvironment,
   DSH_PACKAGE_NAME,
@@ -26,6 +32,7 @@ import { resolveNodeEnvironment } from './node-runtime.mjs'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STARTUP_TIMEOUT_MS = 10 * 60_000
 const DSH_REGISTRY_URL = 'https://registry.npmjs.org/@deepseek-ai%2fdsh/latest'
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000
 
 let mainWindow = null
 let tray = null
@@ -33,6 +40,11 @@ let dshProcess = null
 let startupPromise = null
 let harnessOrigin = null
 let isQuitting = false
+let desktopUpdateCheck = null
+let desktopUpdateTimeout = null
+let desktopUpdateInterval = null
+let desktopUpdateState = { status: 'idle', progress: null, update: null, file: null }
+let desktopUpdatePrompt = null
 
 function emitStatus(message, detail = '', progress = null, error = false) {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -247,6 +259,7 @@ async function launchHarness() {
     [
       dshInstallation.binPath,
       'web',
+      '--no-open',
       '--port',
       String(port),
     ],
@@ -341,6 +354,242 @@ function quitApplication() {
   app.quit()
 }
 
+function restartApplication() {
+  if (isQuitting) return
+  app.relaunch()
+  quitApplication()
+}
+
+function setDesktopUpdateState(status, values = {}) {
+  const has = (key) => Object.prototype.hasOwnProperty.call(values, key)
+  desktopUpdateState = {
+    status,
+    progress: values.progress ?? null,
+    update: has('update') ? values.update : desktopUpdateState.update,
+    file: has('file') ? values.file : desktopUpdateState.file,
+    error: values.error ?? null,
+  }
+}
+
+function showMessageBox(options) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+    return dialog.showMessageBox(mainWindow, options)
+  }
+  return dialog.showMessageBox(options)
+}
+
+function desktopUpdateMenuLabel() {
+  const version = desktopUpdateState.update?.manifest.version
+  switch (desktopUpdateState.status) {
+    case 'checking':
+      return '正在检查桌面端更新…'
+    case 'downloading':
+      return `正在下载桌面端 v${version}（${desktopUpdateState.progress ?? 0}%）`
+    case 'ready':
+      return `安装桌面端更新 v${version}`
+    case 'installing':
+      return `正在打开桌面端 v${version} 安装包…`
+    default:
+      return `检查桌面端更新（当前 v${app.getVersion()}）`
+  }
+}
+
+async function replaceCurrentAppImage(downloadedFile) {
+  const currentAppImage = process.env.APPIMAGE
+  if (!currentAppImage || !path.isAbsolute(currentAppImage)) {
+    throw new Error('无法定位当前 AppImage。')
+  }
+
+  const stagedFile = `${currentAppImage}.update`
+  await rm(stagedFile, { force: true })
+  try {
+    await copyFile(downloadedFile, stagedFile)
+    await chmod(stagedFile, 0o755)
+    await rename(stagedFile, currentAppImage)
+  } catch (error) {
+    await rm(stagedFile, { force: true })
+    throw error
+  }
+
+  app.relaunch({ execPath: currentAppImage })
+  quitApplication()
+}
+
+async function removeOldDesktopUpdates(updatesRoot, keepDirectory) {
+  let entries
+  try {
+    entries = await readdir(updatesRoot, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name !== keepDirectory)
+      .map((entry) => rm(path.join(updatesRoot, entry.name), { recursive: true, force: true })),
+  )
+}
+
+async function installDesktopUpdate() {
+  const { update, file } = desktopUpdateState
+  if (!update || !file || desktopUpdateState.status !== 'ready') return
+  setDesktopUpdateState('installing', { update, file })
+
+  try {
+    if (process.platform === 'linux' && file.endsWith('.AppImage')) {
+      await replaceCurrentAppImage(file)
+      return
+    }
+
+    if (process.platform === 'win32') {
+      const openError = await shell.openPath(file)
+      if (openError) throw new Error(openError)
+      quitApplication()
+      return
+    }
+
+    const openError = await shell.openPath(file)
+    if (openError) throw new Error(openError)
+    setDesktopUpdateState('ready', { update, file })
+  } catch (error) {
+    console.error('[desktop-update] install failed', error)
+    setDesktopUpdateState('ready', { update, file, error })
+    await showMessageBox({
+      type: 'error',
+      title: '无法安装更新',
+      message: '无法打开桌面端更新',
+      detail: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+async function promptDesktopUpdate() {
+  if (desktopUpdatePrompt) return desktopUpdatePrompt
+  const { update, file } = desktopUpdateState
+  if (!update || !file || desktopUpdateState.status !== 'ready') return
+
+  const version = update.manifest.version
+  const installLabel =
+    process.platform === 'linux' && file.endsWith('.AppImage')
+      ? '重启并更新'
+      : process.platform === 'win32'
+        ? '退出并安装'
+        : '打开安装包'
+
+  desktopUpdatePrompt = showMessageBox({
+    type: 'info',
+    title: '桌面端更新已就绪',
+    message: `DeepSeek Harness Desktop v${version} 已下载并通过完整性校验。`,
+    detail:
+      process.platform === 'darwin'
+        ? '打开 DMG 后，请将新版本拖入“应用程序”文件夹完成更新。'
+        : '现在安装，或稍后从系统托盘菜单继续。',
+    buttons: [installLabel, '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  })
+    .then(({ response }) => {
+      if (response === 0) return installDesktopUpdate()
+    })
+    .finally(() => {
+      desktopUpdatePrompt = null
+    })
+  return desktopUpdatePrompt
+}
+
+async function checkForDesktopUpdate({ manual = false } = {}) {
+  if (!app.isPackaged) {
+    if (manual) {
+      await showMessageBox({
+        type: 'info',
+        title: '桌面端更新',
+        message: '开发模式不会检查桌面端更新。',
+      })
+    }
+    return
+  }
+  if (desktopUpdateState.status === 'ready') {
+    if (manual) await promptDesktopUpdate()
+    return
+  }
+  if (desktopUpdateCheck) return desktopUpdateCheck
+
+  desktopUpdateCheck = (async () => {
+    setDesktopUpdateState('checking', { update: null, file: null })
+    try {
+      const update = await fetchAvailableUpdate({
+        fetchImpl: electronNet.fetch,
+        currentVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        isAppImage: Boolean(process.env.APPIMAGE),
+      })
+      if (!update) {
+        setDesktopUpdateState('current', { update: null, file: null })
+        if (manual) {
+          await showMessageBox({
+            type: 'info',
+            title: '桌面端更新',
+            message: `当前已是最新版本 v${app.getVersion()}。`,
+          })
+        }
+        return
+      }
+
+      setDesktopUpdateState('downloading', { update, file: null, progress: 0 })
+      const updatesRoot = path.join(app.getPath('userData'), 'updates')
+      const versionDirectory = `v${update.manifest.version}`
+      const destination = path.join(
+        updatesRoot,
+        versionDirectory,
+        update.asset.name,
+      )
+      const file = await downloadReleaseAsset({
+        fetchImpl: electronNet.fetch,
+        asset: update.asset,
+        destination,
+        onProgress: ({ received, total }) => {
+          const progress = total ? Math.min(100, Math.round((received / total) * 100)) : null
+          setDesktopUpdateState('downloading', { update, progress })
+        },
+      })
+      try {
+        await removeOldDesktopUpdates(updatesRoot, versionDirectory)
+      } catch (error) {
+        console.warn('[desktop-update] unable to remove old downloads', error)
+      }
+      setDesktopUpdateState('ready', { update, file, progress: 100 })
+      await promptDesktopUpdate()
+    } catch (error) {
+      console.warn('[desktop-update] check failed', error)
+      setDesktopUpdateState('error', { update: null, file: null, error })
+      if (manual) {
+        await showMessageBox({
+          type: 'error',
+          title: '检查更新失败',
+          message: '暂时无法检查桌面端更新。',
+          detail: error instanceof Error ? error.message : String(error),
+        })
+      }
+    } finally {
+      desktopUpdateCheck = null
+    }
+  })()
+  return desktopUpdateCheck
+}
+
+function scheduleDesktopUpdates() {
+  desktopUpdateTimeout = setTimeout(() => {
+    void checkForDesktopUpdate()
+  }, 5_000)
+  desktopUpdateInterval = setInterval(() => {
+    void checkForDesktopUpdate()
+  }, UPDATE_CHECK_INTERVAL_MS)
+  desktopUpdateTimeout.unref()
+  desktopUpdateInterval.unref()
+}
+
 function createTrayImage() {
   const assetName =
     process.platform === 'darwin'
@@ -363,6 +612,7 @@ function updateTrayTheme() {
 }
 
 function createTrayContextMenu() {
+  const updateBusy = ['checking', 'downloading', 'installing'].includes(desktopUpdateState.status)
   return Menu.buildFromTemplate([
     {
       label: '在默认浏览器中打开',
@@ -372,6 +622,16 @@ function createTrayContextMenu() {
       },
     },
     { type: 'separator' },
+    {
+      label: desktopUpdateMenuLabel(),
+      enabled: !updateBusy,
+      click: () => {
+        if (desktopUpdateState.status === 'ready') void promptDesktopUpdate()
+        else void checkForDesktopUpdate({ manual: true })
+      },
+    },
+    { type: 'separator' },
+    { label: '重启', click: restartApplication },
     { label: '退出', click: quitApplication },
   ])
 }
@@ -394,6 +654,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 640,
     show: false,
+    autoHideMenuBar: process.platform === 'win32',
     backgroundColor: '#0a0a0a',
     title: 'DeepSeek Harness Desktop',
     webPreferences: {
@@ -403,6 +664,8 @@ function createWindow() {
       sandbox: true,
     },
   })
+
+  if (process.platform === 'win32') mainWindow.removeMenu()
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -436,8 +699,12 @@ if (!singleInstance) {
   })
 
   app.whenReady().then(() => {
+    const applicationMenu =
+      process.platform === 'darwin' ? Menu.buildFromTemplate([]) : null
+    Menu.setApplicationMenu(applicationMenu)
     createTray()
     createWindow()
+    scheduleDesktopUpdates()
   })
   app.on('activate', () => {
     showMainWindow()
@@ -450,6 +717,8 @@ ipcMain.handle('retry-startup', async () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  if (desktopUpdateTimeout) clearTimeout(desktopUpdateTimeout)
+  if (desktopUpdateInterval) clearInterval(desktopUpdateInterval)
   nativeTheme.removeListener('updated', updateTrayTheme)
   stopHarness()
 })

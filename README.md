@@ -46,7 +46,27 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
 
 发布资产也会镜像到 Cloudflare R2，可通过[最新版清单](https://pub-bf5092e77ab5409ba39fb34c4a76c1b1.r2.dev/deepseek-harness-desktop/latest.json)查询版本、文件大小、下载地址与 SHA-256。
 
+安装后的桌面端会自动读取这份清单：启动后检查新版本，并每 6 小时复查一次。发现新版时会在后台下载与校验对应平台的安装包，完成后提示安装；也可以从系统托盘手动检查。Windows 会退出后启动 NSIS 安装程序，Linux AppImage 会原位替换并重启，DEB 与 macOS DMG 会交给系统安装界面处理。
+
 > 当前安装包尚未进行 Apple notarization 或 Windows Authenticode 签名，系统可能显示“未知开发者”或类似提示。请确认下载来源，并在安装前核对 SHA-256。
+
+### macOS 安装错误
+
+**问题：“无法打开，因为无法验证开发者。”**
+
+解决方案：将应用拖入“应用程序”文件夹，在 Finder 中按住 `Control` 键点按应用图标，选择“打开”，再在弹窗中确认“打开”。
+
+**问题：“Apple 无法检查其是否包含恶意软件。”**
+
+解决方案：打开“系统设置”→“隐私与安全性”，找到被拦截的应用，选择“仍要打开”，然后在弹窗中再次确认。
+
+**问题：“应用已损坏，无法打开。您应该将它移到废纸篓。”**
+
+解决方案：打开“终端”，执行以下命令移除此应用的隔离属性，然后重新打开应用：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness Desktop.app"
+```
 
 ## 首次启动
 
@@ -66,6 +86,7 @@ DeepSeek Harness Desktop 是面向 macOS、Windows 和 Linux 的非官方桌面�
 | 环境自适应 | 优先使用兼容的系统 Node.js，否则安装应用私有 runtime |
 | 安全校验 | 下载的 Node.js 官方归档通过固定 SHA-256 校验后才会安装 |
 | 自动同步 | 每次启动查询 npm registry，并在用户全局环境或应用私有环境中原位更新 DSH |
+| 桌面端自动更新 | 通过 R2 清单自动检查、下载并校验新版安装包，失败不影响当前版本运行 |
 | 本地优先 | Harness 服务绑定 `127.0.0.1`，工作状态与缓存保存在本机 |
 | 启动可视化 | 展示运行环境、版本同步、插件装载和界面就绪四个阶段 |
 | 原生体验 | 集成桌面窗口、系统托盘、后台进程管理与失败重试 |

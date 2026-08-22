@@ -37,4 +37,8 @@ deepseek-harness-desktop/releases/vX.Y.Z/<asset>
 
 Versioned objects are immutable: an existing object is reused only when its stored SHA-256 matches. The workflow uploads `deepseek-harness-desktop/latest.json` last and verifies it through the public URL.
 
+Packaged desktop clients consume this manifest for automatic updates. They compare its SemVer with the running app, select the native asset, download it in the background, and require both the declared byte size and SHA-256 to match before offering installation. Keep `schemaVersion: 1`, immutable version URLs, and the `electron-builder` artifact names stable unless the client-side update parser is changed in the same release.
+
+Update installation is platform-aware: Windows launches the verified NSIS installer after quitting; a running Linux AppImage is replaced atomically and restarted; DEB and macOS DMG packages are opened with the system installer. A failed check, download, or installation leaves the currently installed app usable.
+
 If R2 is not configured, GitHub Release publication still succeeds and the job summary explains why R2 was skipped.
