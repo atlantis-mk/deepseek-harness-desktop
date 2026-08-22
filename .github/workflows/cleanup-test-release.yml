@@ -1,0 +1,152 @@
+name: Clean up a test release
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_version:
+        description: "Stable SemVer to delete, without v"
+        required: true
+        type: string
+      restore_version:
+        description: "Stable SemVer to restore as latest, without v"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      GH_TOKEN: ${{ github.token }}
+      R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      DELETE_VERSION: ${{ inputs.delete_version }}
+      RESTORE_VERSION: ${{ inputs.restore_version }}
+    steps:
+      - name: Validate exact cleanup targets
+        run: |
+          set -euo pipefail
+          version_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
+          [[ "$DELETE_VERSION" =~ $version_pattern ]]
+          [[ "$RESTORE_VERSION" =~ $version_pattern ]]
+          [[ "$DELETE_VERSION" != "$RESTORE_VERSION" ]]
+          [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]]
+          [[ -n "$R2_ACCOUNT_ID" && -n "$R2_BUCKET" && -n "$R2_PUBLIC_BASE_URL" ]]
+          gh release view "v${DELETE_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release view "v${RESTORE_VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null
+          latest_url="${R2_PUBLIC_BASE_URL%/}/deepseek-harness-desktop/latest.json"
+          latest_version="$(curl --fail --silent --show-error "$latest_url" | jq -r '.version')"
+          [[ "$latest_version" == "$DELETE_VERSION" ]] || {
+            echo "Refusing cleanup: public latest is $latest_version, expected $DELETE_VERSION" >&2
+            exit 1
+          }
+
+      - name: Create and validate restored latest manifest
+        run: |
+          set -euo pipefail
+          gh release view "v${RESTORE_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets > "$RUNNER_TEMP/release.json"
+          node --input-type=module - <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+
+          const release = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/release.json`, 'utf8'))
+          const version = process.env.RESTORE_VERSION
+          const baseUrl = process.env.R2_PUBLIC_BASE_URL.replace(/\/$/, '')
+          const supported = ['.dmg', '.zip', '.exe', '.AppImage', '.deb']
+          const assets = release.assets
+            .filter((asset) => supported.some((extension) => asset.name.endsWith(extension)))
+            .sort((left, right) => left.name.localeCompare(right.name))
+            .map((asset) => {
+              const prefix = `DeepSeek-Harness-Desktop-${version}-`
+              if (!asset.name.startsWith(prefix)) throw new Error(`Unexpected asset: ${asset.name}`)
+              const sha256 = asset.digest?.replace(/^sha256:/, '')
+              if (!/^[a-f\d]{64}$/i.test(sha256)) throw new Error(`Missing digest: ${asset.name}`)
+              return {
+                name: asset.name,
+                size: asset.size,
+                sha256,
+                url: `${baseUrl}/deepseek-harness-desktop/releases/v${version}/${encodeURIComponent(asset.name)}`,
+              }
+            })
+          if (assets.length !== 7) throw new Error(`Expected 7 installable assets, found ${assets.length}`)
+          const manifest = {
+            schemaVersion: 1,
+            version,
+            tag: `v${version}`,
+            githubRelease: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/tag/v${version}`,
+            assets,
+          }
+          writeFileSync(`${process.env.RUNNER_TEMP}/latest.json`, `${JSON.stringify(manifest, null, 2)}\n`)
+          NODE
+
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="deepseek-harness-desktop/releases/v${RESTORE_VERSION}"
+          while IFS=$'\t' read -r name sha256 size; do
+            read -r stored_sha stored_size <<< "$(
+              aws s3api head-object \
+                --endpoint-url "$endpoint" \
+                --bucket "$R2_BUCKET" \
+                --key "$prefix/$name" \
+                --query '[Metadata.sha256,ContentLength]' \
+                --output text
+            )"
+            [[ "$stored_sha" == "$sha256" && "$stored_size" == "$size" ]] || {
+              echo "Restore asset does not match GitHub: $name" >&2
+              exit 1
+            }
+          done < <(jq -r '.assets[] | [.name, .sha256, (.size | tostring)] | @tsv' "$RUNNER_TEMP/latest.json")
+
+      - name: Restore latest manifest before deleting test assets
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          key="deepseek-harness-desktop/latest.json"
+          aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${R2_BUCKET}/${key}" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json" \
+            --cache-control "no-store, max-age=0" \
+            --no-progress
+          public_url="${R2_PUBLIC_BASE_URL%/}/${key}"
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error "$public_url" --output "$RUNNER_TEMP/public-latest.json" \
+              && cmp -s "$RUNNER_TEMP/latest.json" "$RUNNER_TEMP/public-latest.json"; then
+              exit 0
+            fi
+            [[ "$attempt" != "12" ]] || exit 1
+            sleep 5
+          done
+
+      - name: Delete exact test release targets
+        run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          prefix="deepseek-harness-desktop/releases/v${DELETE_VERSION}/"
+          aws s3 rm "s3://${R2_BUCKET}/${prefix}" \
+            --recursive \
+            --endpoint-url "$endpoint" \
+            --only-show-errors
+          remaining="$(
+            aws s3api list-objects-v2 \
+              --endpoint-url "$endpoint" \
+              --bucket "$R2_BUCKET" \
+              --prefix "$prefix" \
+              --query 'KeyCount' \
+              --output text
+          )"
+          [[ "$remaining" == "0" ]]
+          gh release delete "v${DELETE_VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --cleanup-tag \
+            --yes
+          {
+            echo "Restored latest.json to v${RESTORE_VERSION}."
+            echo "Deleted the R2 prefix and GitHub release/tag for v${DELETE_VERSION}."
+          } >> "$GITHUB_STEP_SUMMARY"
