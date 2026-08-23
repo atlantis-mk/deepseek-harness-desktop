@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -19,6 +20,10 @@ import {
   downloadReleaseAsset,
   fetchAvailableUpdate,
 } from './app-update.mjs'
+import {
+  createApplicationMenuTemplate,
+  createWebContextMenuTemplate,
+} from './edit-menu.mjs'
 import {
   buildHarnessEnvironment,
   DSH_PACKAGE_NAME,
@@ -713,6 +718,15 @@ function createWindow() {
   if (process.platform === 'win32') mainWindow.removeMenu()
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const contextMenu = Menu.buildFromTemplate(
+      createWebContextMenuTemplate(params, {
+        copyText: (text) => clipboard.writeText(text),
+        openExternal: (url) => void shell.openExternal(url),
+      }),
+    )
+    contextMenu.popup({ window: mainWindow, x: params.x, y: params.y })
+  })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url)
     return { action: 'deny' }
@@ -745,7 +759,9 @@ if (!singleInstance) {
 
   app.whenReady().then(() => {
     const applicationMenu =
-      process.platform === 'darwin' ? Menu.buildFromTemplate([]) : null
+      process.platform === 'darwin'
+        ? Menu.buildFromTemplate(createApplicationMenuTemplate())
+        : null
     Menu.setApplicationMenu(applicationMenu)
     createTray()
     createWindow()
